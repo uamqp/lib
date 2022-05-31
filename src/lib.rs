@@ -1,8 +1,15 @@
+use lapin::BasicProperties;
 use tokio::runtime::Runtime;
+use tokio::sync::Mutex;
 
 // use futures::executor::block_on;
-
-use lapin::{options::*, types::FieldTable, Channel, Connection, ConnectionProperties, Consumer};
+use futures_lite::stream::StreamExt;
+use lapin::{
+    message::{Delivery, DeliveryResult},
+    options::*,
+    types::FieldTable,
+    Channel, Connection, ConnectionProperties, Consumer,
+};
 
 use std::sync::Arc;
 
@@ -78,7 +85,7 @@ pub extern "C" fn queue_declare(
 pub extern "C" fn basic_consume(
     rnt: &Runtime,
     channel: &Arc<Channel>,
-    callback: extern "C" fn(Box<Arc<Consumer>>) -> (),
+    callback: extern "C" fn(Box<Arc<Mutex<Consumer>>>) -> (),
 ) {
     println!("Rust: basic_consume!");
 
@@ -93,8 +100,57 @@ pub extern "C" fn basic_consume(
                 BasicConsumeOptions::default(),
                 FieldTable::default(),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
 
-        callback(Box::new(Arc::new(consumer)));
+        callback(Box::new(Arc::new(Mutex::new(consumer))));
+    });
+}
+
+#[no_mangle]
+pub extern "C" fn basic_publish(
+    rnt: &Runtime,
+    channel: &Arc<Channel>,
+    callback: extern "C" fn() -> (),
+) {
+    println!("Rust: basic_publish!");
+
+    let channel_clone = channel.clone();
+
+    rnt.spawn(async move {
+        println!("Rust: async basic_publish!");
+
+        channel_clone
+            .basic_publish(
+                "",
+                "hello",
+                BasicPublishOptions::default(),
+                b"Hello world!",
+                BasicProperties::default(),
+            )
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+
+        callback();
+    });
+}
+
+#[no_mangle]
+pub extern "C" fn next(
+    rnt: &Runtime,
+    consumer: &Arc<Mutex<Consumer>>,
+    callback: extern "C" fn(Box<Arc<Delivery>>) -> (),
+) {
+    println!("Rust: next!");
+
+    let consumer_clone = consumer.clone();
+
+    rnt.spawn(async move {
+        println!("Rust: async next!");
+        let delivery = consumer_clone.lock().await.next().await.unwrap().unwrap();
+
+        callback(Box::new(Arc::new(delivery)));
     });
 }
